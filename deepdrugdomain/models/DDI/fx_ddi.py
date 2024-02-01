@@ -52,7 +52,7 @@ from dgllife.utils import CanonicalAtomFeaturizer, CanonicalBondFeaturizer
 from deepdrugdomain.data import PreprocessingList, PreprocessingObject
 
 @ModelFactory.register('fx_ddi')
-class FragXSiteDTI(BaseModel):
+class FragXSiteDDI(BaseModel):
     def __init__(self,
                  protein_graph_conv_layer: str,
                  ligand_graph_conv_layer: str,
@@ -350,8 +350,8 @@ class FragXSiteDTI(BaseModel):
         feat = CanonicalAtomFeaturizer()
         preprocess_drug = PreprocessingObject(attribute=smile_attr, from_dtype="smile", to_dtype="graph", preprocessing_settings={
                                                    "fragment": True, "max_block": 6, "max_sr": 8, "min_frag_atom": 1, "node_featurizer": feat}, in_memory=True, online=False)
-        preprocess_protein = PreprocessingObject(attribute=pdb_id_attr, from_dtype="pdb_id", to_dtype="binding_pocket_graph", preprocessing_settings={
-                                                        "pdb_path": "data/pdb/", "protein_size_limit": 10000}, in_memory=False, online=False)
+        preprocess_protein = PreprocessingObject(attribute=smile_attr, from_dtype="smile", to_dtype="graph", preprocessing_settings={
+                                                   "fragment": True, "max_block": 6, "max_sr": 8, "min_frag_atom": 1, "node_featurizer": feat}, in_memory=True, online=False)
         preprocess_label = PreprocessingObject(
             attribute=label_attr, from_dtype="binary", to_dtype="binary_tensor", preprocessing_settings={}, in_memory=True, online=True)
         

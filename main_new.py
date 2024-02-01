@@ -123,13 +123,13 @@ def main(args):
     # print(preprocesses)
     # preprocesses = preprocess_drug + preprocess_protein + preprocess_label
     
-    device = torch.device("cuda:0")
+    device = torch.device("cpu")
     model = ModelFactory.create("fx_ddi")
     model.to(device)
     preprocesses = ddd.data.PreprocessingList(model.default_preprocess(
-        "SMILES", "Target_Seq", "Y"))
+        "X1", "X2", "Y"))
     dataset = ddd.data.DatasetFactory.create(
-        "drugbank_ddi", file_paths="data/drugbank/", preprocesses=preprocesses)
+        "drugbank_ddi", file_paths="data/drugbank/", preprocesses=preprocesses, save_directory="data/drugbank/DDI")
     datasets = dataset(split_method="random_split",
                        frac=[0.6, 0.2, 0.2], seed=seed)
 
@@ -148,9 +148,9 @@ def main(args):
     scheduler = SchedulerFactory.create("cosine", optimizer, num_epochs=100, min_lr=1e-5, warmup_epochs=0, warmup_lr=1e-6)
     
     train_evaluator = ddd.metrics.Evaluator(
-        ["mean_absolute_error", "r2_score"], threshold=0.5)
+        ["accuracy_score", "auc", "f1_score"], threshold=0.5)
     test_evaluator = ddd.metrics.Evaluator(
-        ["mean_absolute_error", "r2_score", "concordance_index"], threshold=0.5)
+        ["accuracy_score", "auc", "f1_score", "precision_score"], threshold=0.5)
     
     epochs = 100
     accum_iter = 2

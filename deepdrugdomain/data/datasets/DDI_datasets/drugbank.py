@@ -46,7 +46,7 @@ class DrugBankDDIDataset(CustomDataset):
                  preprocesses: PreprocessingObject,
                  save_directory: str | None = None,
                  # Edit the URL
-                 urls: List[str] | str | None = ['https://github.com/yazdanimehdi/DeepDrugDomain/raw/main/data/drugbank/DrugBank.txt'],
+                 urls: List[str] | str | None = ['https://github.com/khodabandeh-ali/D3-NewTasks/blob/main/data/drugbank/drugbank_DDI.tab'],
                  common_columns: Dict[str,
                                       str] | List[Dict[str, str]] | None = {},
                  separators: List[str] | str = ['\t'],
@@ -54,7 +54,7 @@ class DrugBankDDIDataset(CustomDataset):
                  threads: int = 4) -> None:
 
         self.file_paths = file_paths
-        drugbank_data_path = os.path.join(self.file_paths, 'drugbank_DDI.txt')
+        drugbank_data_path = os.path.join(self.file_paths, 'drugbank_DDI.tab')
 
         file_paths = [drugbank_data_path]
         save_directory = self.file_paths if save_directory is None else save_directory
