@@ -129,7 +129,7 @@ def main(args):
     preprocesses = ddd.data.PreprocessingList(model.default_preprocess(
         "X1", "X2", "Y"))
     dataset = ddd.data.DatasetFactory.create(
-        "drugbank_ddi", file_paths="data/drugbank/", preprocesses=preprocesses, save_directory="data/drugbank/DDI")
+        "drugbank_ddi", file_paths="data/drugbank/", preprocesses=preprocesses)
     datasets = dataset(split_method="random_split",
                        frac=[0.6, 0.2, 0.2], seed=seed)
 

@@ -181,14 +181,14 @@ class FragXSiteDDI(BaseModel):
 
     def forward(self, drug, target):
 
-        protein_rep = self.target_encoder(
-            target).view(1, -1, self.embedding_dim)
+        protein_rep = self.drug_encoder(target).view(1, -1, self.embedding_dim)
         ligand_rep = self.drug_encoder(drug).view(1, -1, self.embedding_dim)
 
         x = self.latent_query.expand(1, -1, -1)
 
         attn_binding = []
         attn_frag = []
+ 
 
         for i, blk in enumerate(self.blocks_ca_input):
             x,  attn = blk(x, protein_rep, return_attn=True)
