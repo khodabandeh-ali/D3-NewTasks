@@ -27,14 +27,16 @@ interpretation and prediction of drug-target interactions.
 
 [Implementation details and methods go here.]
 """
-
+import time
+from dgl.nn.pytorch.glob import MaxPooling
+from copy import deepcopy
 from functools import partial
 from typing import Any, Dict, Optional, Sequence, Tuple
 from deepdrugdomain.layers.modules.graph_encoders.graph_conv import GraphConvEncoder
 from deepdrugdomain.layers.modules.heads.linear import LinearHead
-
+from torch.nn.utils.rnn import pad_sequence
 from deepdrugdomain.layers.utils import LayerFactory, ActivationFactory
-
+import dgl
 from ..factory import ModelFactory
 from ..base_model import BaseModel
 import torch
@@ -118,10 +120,6 @@ class FragXSiteDDI(BaseModel):
         super().__init__()
         self.embedding_dim = embedding_dim
 
-        # Initialize target encoder layers
-        self.target_encoder = GraphConvEncoder(protein_graph_conv_layer, protein_input_size, embedding_dim, protein_graph_conv_dims, protein_graph_pooling,
-                                               protein_graph_pooling_kwargs, protein_graph_conv_kwargs, protein_conv_dropout_rate, protein_conv_normalization)
-
         # Initialize ligand encoder layers
         self.drug_encoder = GraphConvEncoder(ligand_graph_conv_layer, ligand_input_size, embedding_dim, ligand_graph_conv_dims, ligand_graph_pooling,
                                              ligand_graph_pooling_kwargs, ligand_graph_conv_kwargs, ligand_conv_dropout_rate, ligand_conv_normalization)
@@ -156,12 +154,13 @@ class FragXSiteDDI(BaseModel):
             range(output_stages)
         ])
 
-        self.head = LinearHead(embedding_dim, 1, head_dims,
+        self.head = LinearHead(embedding_dim, 87, head_dims,
                                head_activation_fn, head_dropout_rate, head_normalization)
 
         trunc_normal_(self.latent_query, std=.02)
 
         self.apply(self._init_weights)
+        self.pooling = MaxPooling()
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -179,16 +178,22 @@ class FragXSiteDDI(BaseModel):
     def get_classifier(self):
         return self.head
 
-    def forward(self, drug, target):
+    def prepare_and_pool(self, graph, batch_number):
+        pooled = self.pooling(graph, graph.ndata['h'])
+        graph_pooled = pad_sequence(torch.split(pooled, batch_number), batch_first=True, padding_value=0)
 
-        protein_rep = self.drug_encoder(target).view(1, -1, self.embedding_dim)
-        ligand_rep = self.drug_encoder(drug).view(1, -1, self.embedding_dim)
+        return graph_pooled
+    
+    def forward(self, drug, target, drug_batch_number, protein_batch_number):
+        protein_graph = self.drug_encoder(target)
+        ligand_graph = self.drug_encoder(drug)
 
-        x = self.latent_query.expand(1, -1, -1)
+        ligand_rep = self.prepare_and_pool(ligand_graph, drug_batch_number)
+        protein_rep = self.prepare_and_pool(protein_graph, protein_batch_number)
+        x = self.latent_query.expand(protein_rep.size(0), -1, -1)
 
         attn_binding = []
         attn_frag = []
- 
 
         for i, blk in enumerate(self.blocks_ca_input):
             x,  attn = blk(x, protein_rep, return_attn=True)
@@ -202,9 +207,9 @@ class FragXSiteDDI(BaseModel):
             attn_frag.append(attn)
 
         x = torch.mean(x, dim=1)
-
+        x = torch.dropout(x, p=0.4, train=self.training)
         return self.head(x), attn_binding, attn_frag
-
+    
     def predict(self, drug: List[Any], target: List[Any]) -> Any:
         """
             Make predictions using the model.
@@ -232,7 +237,8 @@ class FragXSiteDDI(BaseModel):
         self.train()
         with tqdm(dataloader) as t:
             t.set_description('Training')
-            for batch_idx, (drug, protein, target) in enumerate(t):
+            for batch_idx, x in enumerate(t):
+                
                 last_batch = batch_idx == last_batch_idx
                 need_update = last_batch or (batch_idx + 1) % accum_steps == 0
                 update_idx = batch_idx // accum_steps
@@ -240,27 +246,18 @@ class FragXSiteDDI(BaseModel):
                 if batch_idx >= last_batch_idx_to_accum:
                     accum_steps = last_accum_steps
 
-                outs = []
-                for item in range(len(drug)):
-                    d = drug[item].to(device)
-                    p = protein[item].to(device)
-                    out = self.forward(d, p)
-
-                    if isinstance(out, tuple):
-                        out = out[0]
-
-                    outs.append(out)
-
-                out = torch.stack(outs, dim=0).squeeze(1)
-                target = target.to(
-                    device).view(-1, 1).to(torch.float)
+                out = self.forward(x[0].to(device), x[1].to(device) , x[2], x[3])[0]   
+                # out = torch.stack(outs, dim=0).squeeze(1)
+                target = x[4].to(
+                    device).view(-1).to(torch.int64)
 
                 loss = criterion(out, target)
                 loss /= accum_steps
 
                 loss.backward()
                 losses.append(loss.detach().cpu().item())
-                predictions.append(out.detach().cpu())
+                predictions.append(torch.argmax(out.detach().cpu(), dim=1))
+
                 targets.append(target.detach().cpu())
                 metrics = evaluator(predictions, targets) if evaluator else {}
 
@@ -283,6 +280,7 @@ class FragXSiteDDI(BaseModel):
                 if scheduler is not None:
                     scheduler.step_update(
                         num_updates=num_updates, metric=metrics["loss"])
+        return metrics
 
     def evaluate(self, dataloader: DataLoader, device: torch.device, criterion: Callable, evaluator: Optional[Type[Evaluator]] = None, logger: Optional[Any] = None) -> Any:
 
@@ -292,26 +290,16 @@ class FragXSiteDDI(BaseModel):
         self.eval()
         with tqdm(dataloader) as t:
             t.set_description('Testing')
-            for batch_idx, (drug, protein, target) in enumerate(t):
-                outs = []
+            for batch_idx, x in enumerate(t):
                 with torch.no_grad():
-                    for item in range(len(drug)):
-                        d = drug[item].to(device)
-                        p = protein[item].to(device)
-                        with torch.no_grad():
-                            out = self.forward(d, p)
-                        if isinstance(out, tuple):
-                            out = out[0]
+                    out = self.forward(x[0].to(device), x[1].to(device) , x[2], x[3])[0]    
 
-                        outs.append(out)
-
-                out = torch.stack(outs, dim=0).squeeze(1)
-                target = target.to(
-                    device).view(-1, 1).to(torch.float)
+                target = x[4].to(
+                    device).view(-1).to(torch.int64)
 
                 loss = criterion(out, target)
                 losses.append(loss.detach().cpu().item())
-                predictions.append(out.detach().cpu())
+                predictions.append(torch.argmax(out.detach().cpu(), dim=1))
                 targets.append(target.detach().cpu())
                 metrics = evaluator(predictions, targets) if evaluator else {}
                 metrics["loss"] = np.mean(losses)
@@ -333,9 +321,16 @@ class FragXSiteDDI(BaseModel):
         """
         # Unpacking the batch data
         drug, protein, targets = zip(*batch)
+        drug_count = [len(d) for d in drug]
+        drug = [dgl.batch(d) for d in drug]
+        
+        drug = dgl.batch(drug)
+        protein_count = [len(p) for p in protein]
+        protein = [dgl.batch(p) for p in protein]
+        protein = dgl.batch(protein)
         targets = torch.stack(targets, 0)
 
-        return drug, protein, targets
+        return drug, protein, drug_count, protein_count, targets
     
     def reset_head(self) -> None:
         pass
@@ -346,11 +341,11 @@ class FragXSiteDDI(BaseModel):
     def save_checkpoint(self, *args, **kwargs) -> None:
         return super().save_checkpoint(*args, **kwargs)
 
-    def default_preprocess(self, smile_attr, pdb_id_attr, label_attr) -> List[PreprocessingObject]:
+    def default_preprocess(self, smile_attr1, smile_attr2, label_attr) -> List[PreprocessingObject]:
         feat = CanonicalAtomFeaturizer()
-        preprocess_drug = PreprocessingObject(attribute=smile_attr, from_dtype="smile", to_dtype="graph", preprocessing_settings={
+        preprocess_drug = PreprocessingObject(attribute=smile_attr1, from_dtype="smile", to_dtype="graph", preprocessing_settings={
                                                    "fragment": True, "max_block": 6, "max_sr": 8, "min_frag_atom": 1, "node_featurizer": feat}, in_memory=True, online=False)
-        preprocess_protein = PreprocessingObject(attribute=smile_attr, from_dtype="smile", to_dtype="graph", preprocessing_settings={
+        preprocess_protein = PreprocessingObject(attribute=smile_attr2, from_dtype="smile", to_dtype="graph", preprocessing_settings={
                                                    "fragment": True, "max_block": 6, "max_sr": 8, "min_frag_atom": 1, "node_featurizer": feat}, in_memory=True, online=False)
         preprocess_label = PreprocessingObject(
             attribute=label_attr, from_dtype="binary", to_dtype="binary_tensor", preprocessing_settings={}, in_memory=True, online=True)
